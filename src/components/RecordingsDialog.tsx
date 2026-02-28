@@ -46,7 +46,7 @@ const RecordingsDialog = ({ cameraId, open, onOpenChange }: RecordingsDialogProp
             {camera?.name} — Recordings
           </DialogTitle>
           <p className="text-xs text-muted-foreground font-mono">
-            10-min intervals • 3-day retention • {recordings.length} clips
+            {camera?.recordingIntervalMin}-min intervals • {camera?.retentionDays}-day retention • {recordings.length} clips
           </p>
         </DialogHeader>
         <ScrollArea className="h-[50vh] pr-3">
