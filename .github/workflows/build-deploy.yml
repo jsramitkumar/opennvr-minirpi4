@@ -1,0 +1,66 @@
+name: Build & Deploy OpenNVR
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: docker.io
+  UI_IMAGE: jsrankit/opennvr-ui
+  SERVER_IMAGE: jsrankit/opennvr-server
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image tag
+        run: echo "TAG=$(date +%m%d%Y.%H%M%S)" >> $GITHUB_ENV
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & push UI
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ${{ env.UI_IMAGE }}:${{ env.TAG }}
+            ${{ env.UI_IMAGE }}:latest
+          build-args: |
+            VITE_API_URL=https://opennvr-server.endusercompute.in
+
+      - name: Build & push Server
+        uses: docker/build-push-action@v5
+        with:
+          context: ./server
+          file: ./server/Dockerfile
+          push: true
+          tags: |
+            ${{ env.SERVER_IMAGE }}:${{ env.TAG }}
+            ${{ env.SERVER_IMAGE }}:latest
+
+      - name: Update K8s manifests with new tag
+        run: |
+          sed -i "s|jsrankit/opennvr-server:latest|jsrankit/opennvr-server:${{ env.TAG }}|g" k8s/deployment.yaml
+          sed -i "s|jsrankit/opennvr-ui:latest|jsrankit/opennvr-ui:${{ env.TAG }}|g" k8s/deployment.yaml
+
+      - name: Deploy to K3s
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.K3S_HOST }}
+          username: ${{ secrets.K3S_USER }}
+          key: ${{ secrets.K3S_SSH_KEY }}
+          script: |
+            kubectl apply -f - <<'EOF'
+            $(cat k8s/deployment.yaml)
+            EOF
+            kubectl -n opennvr rollout status deployment/opennvr-server --timeout=120s
+            kubectl -n opennvr rollout status deployment/opennvr-ui --timeout=120s
