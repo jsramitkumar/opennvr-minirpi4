@@ -1,9 +1,9 @@
-import { useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useCameraStore, Recording } from '@/store/cameraStore';
 import { format, isToday, isYesterday, startOfDay } from 'date-fns';
-import { Film, Calendar } from 'lucide-react';
+import { Film, Calendar, Loader2 } from 'lucide-react';
 
 interface RecordingsDialogProps {
   cameraId: string | null;
@@ -14,14 +14,26 @@ interface RecordingsDialogProps {
 const RecordingsDialog = ({ cameraId, open, onOpenChange }: RecordingsDialogProps) => {
   const cameras = useCameraStore((s) => s.cameras);
   const getRecordings = useCameraStore((s) => s.getRecordings);
+  const [recordings, setRecordings] = useState<Recording[]>([]);
+  const [loading, setLoading] = useState(false);
 
   const camera = cameras.find((c) => c.id === cameraId);
-  const recordings = cameraId ? getRecordings(cameraId) : [];
+
+  useEffect(() => {
+    if (open && cameraId) {
+      setLoading(true);
+      getRecordings(cameraId).then((recs) => {
+        setRecordings(recs);
+        setLoading(false);
+      });
+    } else {
+      setRecordings([]);
+    }
+  }, [open, cameraId, getRecordings]);
 
   const groupedRecordings = useMemo(() => {
     const groups = new Map<string, Recording[]>();
     const sorted = [...recordings].sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-    
     sorted.forEach((rec) => {
       const dayKey = startOfDay(rec.timestamp).toISOString();
       if (!groups.has(dayKey)) groups.set(dayKey, []);
@@ -50,7 +62,11 @@ const RecordingsDialog = ({ cameraId, open, onOpenChange }: RecordingsDialogProp
           </p>
         </DialogHeader>
         <ScrollArea className="h-[50vh] pr-3">
-          {recordings.length === 0 ? (
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : recordings.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
               <Film className="h-8 w-8 mb-2 opacity-40" />
               <span className="font-mono text-sm">No recordings available</span>
@@ -70,10 +86,8 @@ const RecordingsDialog = ({ cameraId, open, onOpenChange }: RecordingsDialogProp
                   </div>
                   <div className="grid grid-cols-4 gap-1.5">
                     {recs.map((rec) => (
-                      <button
-                        key={rec.id}
-                        className="group relative aspect-video rounded bg-muted camera-grid-bg flex items-center justify-center border border-border hover:border-primary/50 transition-colors cursor-pointer"
-                      >
+                      <button key={rec.id}
+                        className="group relative aspect-video rounded bg-muted camera-grid-bg flex items-center justify-center border border-border hover:border-primary/50 transition-colors cursor-pointer">
                         <Film className="h-3 w-3 text-muted-foreground group-hover:text-primary transition-colors" />
                         <span className="absolute bottom-0.5 left-0.5 font-mono text-[8px] text-muted-foreground group-hover:text-foreground">
                           {format(rec.timestamp, 'HH:mm')}

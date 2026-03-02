@@ -1,0 +1,289 @@
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: opennvr
+
+---
+# PostgreSQL PersistentVolumeClaim
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: opennvr
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# PostgreSQL Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+  namespace: opennvr
+type: Opaque
+stringData:
+  POSTGRES_DB: opennvr
+  POSTGRES_USER: opennvr
+  POSTGRES_PASSWORD: changeme-in-production
+
+---
+# PostgreSQL Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: opennvr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: postgres-secret
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: postgres-pvc
+
+---
+# PostgreSQL Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: opennvr
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+
+---
+# Server Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opennvr-server
+  namespace: opennvr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opennvr-server
+  template:
+    metadata:
+      labels:
+        app: opennvr-server
+    spec:
+      initContainers:
+        - name: migrate
+          image: jsrankit/opennvr-server:latest
+          command: ["node", "dist/migrate.js"]
+          env:
+            - name: DB_HOST
+              value: postgres
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_DB
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
+      containers:
+        - name: server
+          image: jsrankit/opennvr-server:latest
+          ports:
+            - containerPort: 3001
+          env:
+            - name: PORT
+              value: "3001"
+            - name: DB_HOST
+              value: postgres
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_DB
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
+            - name: CORS_ORIGIN
+              value: "https://opennvr.endusercompute.in"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 10
+            periodSeconds: 30
+
+---
+# Server Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: opennvr-server
+  namespace: opennvr
+spec:
+  selector:
+    app: opennvr-server
+  ports:
+    - port: 80
+      targetPort: 3001
+
+---
+# UI Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opennvr-ui
+  namespace: opennvr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opennvr-ui
+  template:
+    metadata:
+      labels:
+        app: opennvr-ui
+    spec:
+      containers:
+        - name: ui
+          image: jsrankit/opennvr-ui:latest
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+---
+# UI Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: opennvr-ui
+  namespace: opennvr
+spec:
+  selector:
+    app: opennvr-ui
+  ports:
+    - port: 80
+      targetPort: 80
+
+---
+# TLS Secret (from certs at /home/pi/downloads)
+# Apply manually:
+#   kubectl create secret tls opennvr-tls \
+#     --cert=/home/pi/downloads/fullchain.pem \
+#     --key=/home/pi/downloads/privkey.pem \
+#     -n opennvr
+apiVersion: v1
+kind: Secret
+metadata:
+  name: opennvr-tls
+  namespace: opennvr
+type: kubernetes.io/tls
+data:
+  tls.crt: ""   # placeholder - apply via kubectl command above
+  tls.key: ""   # placeholder - apply via kubectl command above
+
+---
+# Ingress for frontend
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: opennvr-ui-ingress
+  namespace: opennvr
+  annotations:
+    kubernetes.io/ingress.class: traefik
+spec:
+  tls:
+    - hosts:
+        - opennvr.endusercompute.in
+      secretName: opennvr-tls
+  rules:
+    - host: opennvr.endusercompute.in
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: opennvr-ui
+                port:
+                  number: 80
+
+---
+# Ingress for backend
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: opennvr-server-ingress
+  namespace: opennvr
+  annotations:
+    kubernetes.io/ingress.class: traefik
+spec:
+  tls:
+    - hosts:
+        - opennvr-server.endusercompute.in
+      secretName: opennvr-tls
+  rules:
+    - host: opennvr-server.endusercompute.in
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: opennvr-server
+                port:
+                  number: 80
